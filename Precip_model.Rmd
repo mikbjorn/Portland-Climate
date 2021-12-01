@@ -1,0 +1,271 @@
+---
+title: "Rain Analysis"
+author: "Mikkel Bjornson"
+date: "3/7/2021"
+output: pdf_document
+---
+
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE)
+
+## Library
+library(readr)
+library(tidyverse)
+library(gridExtra)
+library(TSA)
+library(forecast)
+
+## Data
+train <- readRDS(here::here("train.rds"))
+test <- readRDS(here::here("test.rds"))
+```
+
+
+
+```{r exploratory}
+p1<-ggplot(train, aes(time, prec))+
+  geom_line(na.rm = T)+
+  theme_classic()
+
+p2<-ggplot(train, aes(mo, prec, group=yr))+
+  geom_line(na.rm = T)+
+  scale_x_continuous(breaks = 1:12, labels = month.abb)+
+  theme_classic()
+
+grid.arrange(p1,p2)
+```
+
+
+
+Examining the time plot above we see evidence of seasonality. The plot of the subset of the time series highlights the seasonality with increased rain in the fall to spring and decreased rain in summer months. Many of the years appear to have a dip in rainfall in the middle of winter, but is not consistent for all years. At this point, the variance appears to be relatively stable, and no clear trend is present. 
+
+```{r}
+## extract rain as ts
+rain.ts<- ts(train$prec, start = c(train$yr[1],train$mo[1]), frequency = 12)
+rain.test<- ts(test$prec, start = c(test$yr[1],test$mo[1]), frequency = 12)
+
+## estimate seasonality
+month<- factor(cycle(rain.ts))
+rain.sea <- lm(rain.ts~month)
+rain.sea.ts<- ts(rain.sea$fitted.values, start = c(train$yr[1],train$mo[1]), frequency = 12)
+## Remove seasonality
+rain.rand<- ts(rain.ts-rain.sea.ts, start = c(train$yr[1],train$mo[1]), frequency = 12)
+
+## time plot of deseasoned data
+ggplot(data.frame(time = train$time, rand = c(rain.rand)), aes(x=time, y=rand))+
+  geom_line()+
+  theme_classic()
+
+
+```
+
+The updated time series appears to be stationary with no seasonality or trend. 
+
+```{r}
+## auto correlation
+acf(rain.rand, na.action = na.pass)
+pacf(rain.rand, na.action = na.pass)
+eacf(rain.rand)
+```
+
+Examining the ACF, PACF, and EACF it appears that AR(1) or MA(1) might both be good options. We will also fit an ARMA(1,1) model and choose based upon AIC. 
+
+
+```{r}
+rain.m1<-arima(rain.rand, order = c(1,0,0), include.mean = F)
+rain.m2<-arima(rain.rand, order = c(0,0,1), include.mean = F)
+rain.m3<-arima(rain.rand, order = c(1,0,1), include.mean = F)
+rain.m1
+rain.m2
+rain.m3
+```
+
+
+The AR(1) model appears to have the best AIC value followed closely by the MA1 model. The ARMA(1,1) model does not provide a better AIC or log likelihood and will be abandoned at this point for the more parsimonious options. 
+
+```{r}
+tsdiag(rain.m1)
+pacf(rain.m1$residuals)
+qqnorm(rain.m1$residuals)
+qqline(rain.m1$residuals)
+
+tsdiag(rain.m2)
+pacf(rain.m2$residuals)
+qqnorm(rain.m2$residuals)
+qqline(rain.m2$residuals)
+
+
+```
+
+The residuals appear to not satisfy the normal condition for the MLE method. They will be refit using the least squares method. 
+
+
+```{r}
+rain.m4<-arima(rain.rand, order = c(1,0,0), include.mean = F, method = 'CSS')
+rain.m5<-arima(rain.rand, order = c(0,0,1), include.mean = F, method = 'CSS')
+rain.m6<-arima(rain.rand, order = c(1,0,1), include.mean = F, method = 'CSS')
+rain.m4
+rain.m5
+rain.m6
+```
+
+We refit the initial three models using the sum of squares method. There does not appear to be a large difference when comparing with the maximum likelihood models. The partial log likelihood is about the same for all three models. We proceed using the AR(1) and MA(1) models. 
+
+```{r}
+pacf(rain.m4$residuals)
+tsdiag(rain.m4)
+
+pacf(rain.m5$residuals)
+tsdiag(rain.m5)
+```
+
+Both models appear to pass diagnostics. 
+
+
+```{r}
+nahead<- 12*15
+
+# predict random
+rain.ar1.rand.preds<- predict(rain.m1, n.ahead =nahead )
+rain.ma1.rand.preds<- predict(rain.m2, n.ahead =nahead )
+
+# predict seasonality
+rain.sea.pred<- ts(rain.sea$fitted.values[3:nahead+2], start = 2005, frequency = 12)
+
+# prediction
+rain.ar1.preds<- rain.sea.pred+rain.ar1.rand.preds$pred
+rain.ma1.preds<- rain.sea.pred+rain.ma1.rand.preds$pred
+rain.pred.time<- time(rain.ar1.preds)
+
+
+ggplot(train, aes(time, prec ))+
+  geom_line(na.rm = T)+
+  geom_line(data = data.frame(t = rain.pred.time, preds=rain.ar1.preds), aes(x=t, y=preds), col='red')+
+  labs(title="AR(1)")
+
+ggplot(train, aes(time, prec ))+
+  geom_line(na.rm = T)+
+  geom_line(data = data.frame(t = rain.pred.time, preds=rain.ma1.preds), aes(x=t, y=preds), col='blue')+
+  labs(title="MA(1)")
+```
+
+The predictions based on the AR(1) model are plotted in red above. Visually, these predictions do not appear to follow the same pattern as we see in the time series. The MA(1) model provided similar predictions plotted above in blue. We will use the Mean square error (MSE) as a measure to estimate the extent to which it matches the hold out data saved for testing. 
+
+```{r}
+
+
+rain.ar1.mse<- sum((rain.ar1.preds-rain.test)^2)/nahead
+rain.ma1.mse<- sum((rain.ma1.preds-rain.test)^2)/nahead
+
+paste("AR(1), MSE = ", rain.ar1.mse)
+paste("MA(1), MSE = ",rain.ma1.mse)
+
+
+rain.m1
+```
+
+The MSE for both models is very similar. Both models appear to be producing similar predictions. 
+
+
+
+ARIMA MODEL
+
+```{r}
+
+rain.ts.diff<- diff(rain.ts, lag=12)
+rain.ts.diff2 <- diff(rain.ts.diff, lag = 12)
+plot(rain.ts)
+plot(rain.ts.diff)
+plot(rain.ts.diff2)
+
+```
+We difference to attempt to remove seasonality. There is little difference between first and second difference. The first order difference appears to remove seasonality.
+
+
+```{r}
+#ACF and PACF
+par(mfrow=c(1,2))
+acf(rain.ts.diff, lag.max=48, main='ACF')
+pacf(rain.ts.diff,lag.max=48, main='PACF')
+eacf(rain.ts.diff)
+```
+
+The ACF appears to cut off on the first seasonal lag (lag 12) while the PACF appears to taper off with the seasonal lags. This suggests an ARIMA(0,1,1)12 for seasonality. With no trend, the ACF, PACF, and EACF appear to suggests p=0 or 1, and q = 0 or 1, with d=0. 
+
+```{r}
+# model fitting
+rain.fit1<- arima(rain.ts, order=c(0,0,1), seasonal=list(order=c(0,1,1), period=12))
+rain.fit2<- arima(rain.ts, order=c(1,0,1), seasonal=list(order=c(0,1,1), period=12))
+rain.fit3<- arima(rain.ts, order=c(1,0,0), seasonal=list(order=c(0,1,1), period=12))
+
+rain.fit1
+rain.fit2
+rain.fit3
+```
+
+```{r}
+tsdiag(rain.fit1)
+tsdiag(rain.fit3)
+
+qqnorm(rain.fit1$residuals)
+qqline(rain.fit1$residuals)
+
+qqnorm(rain.fit3$residuals)
+qqline(rain.fit3$residuals)
+
+res1=rain.fit1$residuals
+acf(res1)
+pacf(res1)
+
+res3=rain.fit3$residuals
+acf(res3)
+pacf(res3)
+```
+
+Diagnostics for both models appear to fit about the same. 
+
+```{r}
+## fit test data
+rain.pred1<- predict(rain.fit1, n.ahead = 180)
+rain.pred3<- predict(rain.fit3, n.ahead = 180)
+
+plot(rain.ts, xlim=c(2000,2020), xlab='Rain Fall')
+#adding the model prediction as red line; 95% confidence as blue line
+lines(rain.pred1$pred, col='red')
+lines(rain.pred1$pred-2*rain.pred1$se, col='blue')
+lines(rain.pred1$pred+2*rain.pred1$se, col='blue')
+```
+
+
+```{r}
+## check test error
+rain.mse1=mean((rain.pred1$pred- rain.test )^2, na.rm=TRUE)^0.5
+rain.mse3=mean((rain.pred3$pred - rain.test)^2, na.rm = TRUE)^0.5
+rain.mse1
+rain.mse3
+```
+
+```{r}
+rain.hw<- hw(rain.ts, seasonal= "additive", h=nahead)
+
+hw.est<- cbind(test$time, rain.hw$mean, rain.hw$upper, rain.hw$lower) %>% as.data.frame()
+names(hw.est)<-c("time1", "est", "u80", "u95", "l80", "l95")
+
+ggplot(hw.est, aes(x= time1 , y=est))+
+  geom_line()+
+  geom_line(data=train, aes(x=time, y= prec))+
+  geom_line(data = test, aes(time, prec), color="red", alpha = 0.5)
+
+rain.hw$model
+```
+
+```{r}
+rmse.hw<- (mean((rain.hw$mean - test$prec)^2))^0.5
+```
+
+
+
+
+
+
+

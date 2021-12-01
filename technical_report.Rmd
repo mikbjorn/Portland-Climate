@@ -1,0 +1,398 @@
+---
+title: "Climate Analysis of Portland, OR"
+author: "Mikkel Bjornson, Dang Dinh, Jiefeng Chen "
+date: "10/22/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+## Library
+library(readr)
+library(tidyverse)
+library(gridExtra)
+library(TSA)
+library(forecast)
+
+## Data
+train <- readRDS(here::here("train.rds"))
+test <- readRDS(here::here("test.rds"))
+all<- rbind(train, test)
+
+## time series
+rain.ts<- ts(train$prec, start = c(train$yr[1],train$mo[1]), frequency = 12)
+rain.test<- ts(test$prec, start = c(test$yr[1],test$mo[1]), frequency = 12)
+tmin.train<- ts(train$t_min, start = c(train$yr[1],train$mo[1]), frequency = 12)
+tmin.test<- ts(test$t_min, start = c(test$yr[1],test$mo[1]), frequency = 12)
+tmax.train<- ts(train$t_max, start = c(train$yr[1],train$mo[1]), frequency = 12)
+tmax.test<- ts(test$t_max, start = c(test$yr[1],test$mo[1]), frequency = 12)
+
+rain.all.ts<- ts(all$prec, start = c(train$yr[1],train$mo[1]), frequency = 12)
+tmin.all.ts<- ts(all$t_min, start = c(train$yr[1],train$mo[1]), frequency = 12)
+tmax.all.ts<- ts(all$t_max, start = c(train$yr[1],train$mo[1]), frequency = 12)
+```
+
+
+# Introduction 
+
+Climate change has been a topic of importance for some time. It is general knowledge that the world is seeing an increasing trend in average global temperature and changes precipitation. Global trends give the big picture, but analysis at the local level is needed to understand effects on individual communities. This study aims to quantify the changes in temperature and precipitation for Portland, OR.
+
+
+# Data Description
+
+The analysis uses time series data of daily precipitation (inches), minimum temperature, and maximum temperature from November 1940 - December 2019. Precipitation is aggregated into monthly totals. Minimum and Maximum temperatures are averaged for the month. Several months had missing values for each variable. Further exploration revealed the missing values were at the end and beginning of the time series, and were removed. Several other values were marked with a t, metadata revealed these values were below the measurable amount (<0.01 inches), and were replaced with 0 for the purpose of this study. All measurements were recorded at Portland International Airport. 
+
+```{r, message=F, warning=F, error=F, fig.height=3.5}
+pl.temp.ts<- ggplot(rbind(train, test), aes(time, t_max))+
+  geom_line(color="tomato", alpha=0.8)+
+  geom_line(aes(time, t_min), color="lightblue3", alpha = 0.8)+
+  labs(x="", y="Degrees Farenhiet")+
+  geom_smooth(method = "lm", color = "tomato", se=F, formula = y~x)+
+  geom_smooth(aes(time, t_min), method="lm", color = "lightblue3", se=F, formula = y~x)+
+  theme_classic()
+
+pl.rain.ts<- ggplot(rbind(train,test), aes(time, prec))+
+  geom_line(color = "slateblue4")+
+  labs(x="", y="Precipitation")+
+  geom_smooth(method = "lm", se=F, color="slateblue4", formula = y~x)+
+  theme_classic()
+
+pl.temp.seas<-ggplot(rbind(train,test), aes(mo, t_max, group = yr))+
+  geom_line(alpha = 0.2, color = "tomato")+
+  geom_line(aes(mo, t_min, group=yr), color="lightblue3", alpha = 0.2)+
+  labs(x="", y="Temperature")+
+  scale_x_continuous(breaks = 1:12, labels = month.abb)+
+  theme_classic()
+
+pl.rain.seas<- ggplot(rbind(train,test), aes(mo, prec, group = yr))+
+  geom_line(color = "slateblue4", alpha=0.2)+
+  labs(x="", y="Precipitation")+
+  scale_x_continuous(breaks = 1:12, labels = month.abb)+
+  theme_classic()
+
+grid.arrange(pl.rain.ts,  pl.rain.seas, 
+             bottom = paste("Fig. 1: Top, Precipitation 1940-2019,", 
+             " Bottom, Seasonality of Precipitation", sep = "\n"))
+
+grid.arrange(pl.temp.ts, pl.temp.seas, 
+             bottom=paste("Fig. 2: (Top) Minimum & Maximum Temperature 1940-2019,",
+                          "(Bottom) Seasonality of Temperatures", sep = "\n"))
+```
+
+The precipitation shows no evidence of trend as seen in the time plot (Fig. 1 Top). There is strong evidence of a seasonal change with little rain in summer (Fig. 1 Bottom). Winter months appear to have more rain, but also more variation while summer months are consistently drier. Both minimum and maximum temperatures show evidence of a positive trend (Fig. 2, Top). Both Temperature variables also show evidence of strong seasonality with higher temperatures in the summer (Fig. 2, Bottom). Both the minimum and maximum temperatures appear to be higher in the summer and lower in the winter with relatively constant variation.   
+
+
+Analysis focused on the forecasting of all three variables from 2020 to 2029. Model building used 1940-2004 for training and 2005-2019 to validate the model. Both ARMA, Seasonal ARIMA, and Holt-Winter predictive models were built [2]. Akaike's Information Criterion (AIC) was used to compare within the ARMA and SARIMA models [2]. Root Mean Squared Error (RMSE) was then calculated using the validation set to compare the accuracy of each final model. Ten year forecasts for each variable were calculated using the best models. 
+
+# Statistical Models
+ The ARMA, SARIMA, and Holt-Winters models for each variable are reported below. 
+ 
+## ARMA
+
+* Precipitation:
+
+$$Monthly \ \ rain = S_t + Y_t$$
+Where, 
+$$S_t= \beta_0 + \beta_1(month)+\epsilon$$
+$$AR(1): Y_t = \phi Y_{t-1}+W_t$$
+
+* Minimum Temperature:
+
+$$Monthly \ Minimum \ Temperature = T_t+S_t+Y_t$$
+Where,
+$$T_t= \beta_0 + \beta_1(time)+ \epsilon$$
+$$S_t= \beta_0 + \beta_1(month)+\epsilon$$
+$$ARMA(1,2): Y_t = \phi_1 Y_{t-1} + \theta_1W_t-1+\theta_2W_{t-2}+W_t$$
+
+* Maximum Temperature:
+
+$$Monthly \ Maximum \ Temperature = T_t+S_t+Y_t$$
+Where,
+$$T_t= \beta_0 + \beta_1(time)+ \epsilon$$
+$$S_t= \beta_0 + \beta_1(month)+\epsilon$$
+$$ARMA(1,1): Y_t = \phi Y_{t-1} + \theta W_{t-1}+W_t$$
+
+# Seasonal ARIMA
+* Precipitation:
+
+$$SARIMA(0,0,1) \times (0,1,1)12: \ (1-B)Y_t = (1+ \Theta_1 B^{12})(1+\theta_1 B)W_t$$
+
+* Minimum Temperature:
+
+$$Sarima(1,1,2)\times(0,1,1)12: (1 - \phi_1 B)(1-B)(1-B^{12})Y_t = (1+\Theta_1B^{12})(1+\theta_2 B)W_t$$
+
+* Maximum Temperature:
+
+$$Sarima(1,1,2)\times(0,1,1)12: (1 - \phi_1 B)(1-B)(1-B^{12})Y_t = (1+\Theta_1B^{12})(1+\theta_2 B)W_t$$
+
+# Holt Winters Additive model:
+All three variables are predicted with the model below, using automatic fitting to estimate the values of $\alpha$, $\beta$, and $\gamma$ and optimal initial values. 
+
+$$Y_t= L_{t-1} + T_{t-1} + S_{t+1-m}$$
+
+$$L_t = \alpha(Y_t - S_{t-12}) + (1-\alpha)(L_{t-1}+T_{t-1})$$
+$$T_t = \beta(L_t - L_{t-1})+(1-\beta)B_{t-1}$$
+$$S_t= \gamma(Y_t-L_{t-1}-B_{t-1})+(1-\gamma)S_{t-12}$$
+
+# Results
+
+```{r ARMA}
+nahead<- 12*15
+
+## precipitation
+month<- factor(cycle(rain.ts))
+rain.sea <- lm(rain.ts~month)
+rain.sea.ts<- ts(rain.sea$fitted.values, start = c(train$yr[1],train$mo[1]), frequency = 12)
+## Remove seasonality
+rain.rand<- ts(rain.ts-rain.sea.ts, start = c(train$yr[1],train$mo[1]), frequency = 12)
+## model
+rain.m1<-arima(rain.rand, order = c(1,0,0), include.mean = F)
+
+rain.ar1.rand.preds<- predict(rain.m1, n.ahead =nahead )
+rain.sea.pred<- ts(rain.sea$fitted.values[3:nahead+2], start = 2005, frequency = 12)
+rain.ar1.preds<- rain.sea.pred+rain.ar1.rand.preds$pred
+rain.ar1.rmse<- mean((rain.ar1.preds-rain.test)^2)^0.5
+
+## tmin
+## estimate trend
+tmin.trend<- lm(t_min~time, data=train)
+tmin.trend.ts<- ts(tmin.trend$fitted.values, start = c(train$yr[1],train$mo[1]), frequency = 12)
+
+## detrend
+tmin.train.det <- tmin.train-tmin.trend.ts
+
+## estimate seasonality
+mo<- as.factor(train$mo)
+tmin.sea<- lm(tmin.train.det~mo)
+tmin.sea.ts<- ts(tmin.sea$fitted.values, start = c(train$yr[1],train$mo[1]), frequency = 12)
+
+## de-season
+tmin.train.rand<- tmin.train.det-tmin.sea.ts
+##model
+tmin.m3<-arima(tmin.train.rand, order = c(1,0,2), include.mean = F)
+
+## make predictions
+tmin.m3.preds <- predict(tmin.m3, n.ahead = 180)
+
+## estimate seasonality
+tmin.sea.pred<- predict(tmin.sea, newdata = data.frame(mo=as.factor(test$mo)))
+
+## estimate trend
+tmin.trend.pred<- predict(tmin.trend, newdata = test)
+
+## total
+tmin.arma.pred<- tmin.m3.preds$pred + tmin.sea.pred + tmin.trend.pred
+## RMSE
+tmin.arma.rmse<-(mean((tmin.arma.pred-test$t_min)^2))^0.5
+
+## TMAX
+## estimate trend
+tmax.trend<- lm(t_max~time, data=train)
+tmax.trend.ts<- ts(tmax.trend$fitted.values, start = c(train$yr[1],train$mo[1]), frequency = 12)
+
+## detrend
+tmax.train.det <- tmax.train-tmax.trend.ts
+
+## estimate seasonality
+mo<- as.factor(train$mo)
+tmax.sea<- lm(tmax.train.det~mo)
+tmax.sea.ts<- ts(tmax.sea$fitted.values, start = c(train$yr[1],train$mo[1]), frequency = 12)
+
+## de-season
+tmax.train.rand<- tmax.train.det-tmax.sea.ts
+
+# model
+tmax.m2<-arima(tmax.train.rand, order = c(1,0,1), include.mean = F)
+
+## make predictions
+tmax.m2.preds <- predict(tmax.m2, n.ahead = 180)
+
+## estimate seasonality
+tmax.sea.pred<- predict(tmax.sea, newdata = data.frame(mo=as.factor(test$mo)))
+
+## estimate trend
+tmax.trend.pred<- predict(tmax.trend, newdata = test)
+
+## total
+tmax.arma.pred<- tmax.m2.preds$pred + tmax.sea.pred + tmax.trend.pred
+tmax.arma.rmse<-(mean((tmax.arma.pred-test$t_max)^2))^0.5
+```
+
+```{r ARIMA}
+## Precipitation
+rain.fit3<- arima(rain.ts, order=c(1,0,0), seasonal=list(order=c(0,1,1), period=12))
+rain.pred3<- predict(rain.fit3, n.ahead = 180)
+rain.rmse3=mean((rain.pred3$pred - rain.test)^2, na.rm = TRUE)^0.5
+
+## Tmin
+tmin.fit3<- arima(tmin.train, order=c(1,1,2), seasonal=list(order=c(0,1,1), period=12))
+tmin.sarima.preds<- predict(tmin.fit3, n.ahead = 180)
+tmin.sarima.rmse<- mean((tmin.sarima.preds$pred - test$t_min)^2)^0.5
+
+## TMAX
+tmax.fit3<- arima(tmax.train, order=c(1,1,2), seasonal=list(order=c(0,1,1), period=12))
+tmax.sarima.preds<- predict(tmax.fit3, n.ahead = 180)
+tmax.sarima.rmse<- mean((tmax.sarima.preds$pred - test$t_max)^2)^0.5
+```
+
+```{r HW}
+## Precipitation
+rain.hw<- hw(rain.ts, seasonal= "additive", h=nahead)
+rmse.hw<- (mean((rain.hw$mean - test$prec)^2))^0.5
+
+## tmin
+tmin.hw<- hw(tmin.train, seasonal= "additive", h=nahead)
+tmin.hw.rmse<- (mean((tmin.hw$mean - test$t_min)^2))^0.5
+
+#Tmax
+tmax.hw<- hw(tmax.train, seasonal= "additive", h=nahead)
+tmax.hw.rmse<- (mean((tmax.hw$mean - test$t_max)^2))^0.5
+```
+
+Best models were selected for all three methods attempted. Root mean squared errors for each model are reported in Table 1. The Seasonal ARIMA model produced the best forecast for precipitation and maximum temperature. It is worth noting the the RMSE is only slightly different among the three models. The minimum temperature appears to be best predicted by the ARMA model. These models were used to forecast the next decade.   
+
+```{r}
+vs<- c("Precipitation"," "," ", "Min. Temperature" ," "," ", "Max. Temperature"," "," ")
+#vs<- c(rep("Precipitation", 3), rep("Min. Temperature", 3), rep("Max. Temperature", 3))
+models<-c("AR(1)", "SARIMA(0,0,1)x(0,1,1)12", "Holt-Winters", "ARMA(1,2)", "Sarima(1,1,2)x(0,1,1)12", "Holt-Winters", "ARMA(1,1)", "Sarima(1,1,2)x(0,1,1)12", "Holt-Winters" )
+rmse<- c(rain.ar1.rmse, rain.rmse3, rmse.hw, 
+         tmin.arma.rmse, tmin.sarima.rmse, tmin.hw.rmse,
+         tmax.arma.rmse, tmax.sarima.rmse, tmax.hw.rmse)
+
+rmse.table<- data.frame(variable = vs, model = models, RMSE = rmse)
+
+knitr::kable(rmse.table, caption = "Root Mean Square Error on Validation set")
+```
+
+
+
+
+```{r rain forecast}
+columns <- c("time1", "mo", "est", "upr", "lwr")
+## Precipitation
+nahead = 12*10
+rain.fit.all<- arima(rain.all.ts, order=c(1,0,0), seasonal=list(order=c(0,1,1), period=12))
+rain.pred.all<- predict(rain.fit.all, n.ahead = nahead)
+
+rain.for<- cbind(time(rain.pred.all$pred),cycle(rain.pred.all$pred), 
+                 rain.pred.all$pred, rain.pred.all$pred + 2*rain.pred.all$se,
+                 rain.pred.all$pred - 2*rain.pred.all$se) %>%
+  data.frame() %>% tibble()
+names(rain.for)<- columns
+rain.for$lwr[rain.for$lwr<0]<-0 
+```
+
+```{r tmin forecast}
+## tmin
+## estimate trend
+tmin.all.trend<- lm(t_min~time, data=all)
+tmin.all.trend.ts<- ts(tmin.all.trend$fitted.values, start = c(all$yr[1],all$mo[1]), frequency = 12)
+
+## detrend
+tmin.all.det <- tmin.all.ts -tmin.all.trend.ts
+
+## estimate seasonality
+mo<- as.factor(all$mo)
+tmin.all.sea<- lm(tmin.all.det~mo)
+tmin.all.sea.ts<- ts(tmin.all.sea$fitted.values, start = c(all$yr[1],all$mo[1]), frequency = 12)
+
+## de-season
+tmin.all.rand<- tmin.all.det-tmin.all.sea.ts
+
+##model
+tmin.all.md<-arima(tmin.all.rand, order = c(1,0,2), include.mean = F)
+
+## make predictions
+tmin.all.preds <- predict(tmin.all.md, n.ahead = nahead)
+
+## estimate seasonality
+tmin.all.sea.pred<- predict(tmin.all.sea, 
+                            newdata = data.frame(mo=as.factor(cycle(tmin.all.preds$pred))))
+
+## estimate trend
+tmin.all.trend.pred<- predict(tmin.all.trend,
+                            newdata = data.frame(time=time(tmin.all.preds$pred)))
+
+## total
+tmin.all.for<- tmin.all.preds$pred + tmin.all.sea.pred + tmin.all.trend.pred
+
+tmin.for<- cbind(time(tmin.all.for),cycle(tmin.all.for), 
+                 tmin.all.for, 
+                 tmin.all.for + 2*tmin.all.preds$se,
+                 tmin.all.for - 2*tmin.all.preds$se) %>%
+  data.frame() %>% tibble()
+names(tmin.for)<- columns
+``` 
+
+
+```{r tmax forecast}
+
+#Tmax
+tmax.all.md<- arima(tmax.all.ts, order=c(1,1,2), seasonal=list(order=c(0,1,1), period=12))
+tmax.pred.all<- predict(tmax.all.md, n.ahead = nahead)
+
+tmax.for<- cbind(time(tmax.pred.all$pred),cycle(tmax.pred.all$pred), 
+                 tmax.pred.all$pred, 
+                 tmax.pred.all$pred + 2*tmax.pred.all$se,
+                 tmax.pred.all$pred - 2*tmax.pred.all$se) %>%
+  data.frame() %>% tibble()
+names(tmax.for)<- columns
+```
+
+Forecasts for precipitation, minimum temperature, and maximum temperature are available in Fig. 3. Precipitation forecasts are dominated by seasonality and continue to show not trend. Both minimum and maximum temperature have a strong seasonality. There is also evidence of a slight upward trend. The upward trend is evident in the ARMA model fit to minimum temperature, with an estimated increase of `r round(tmin.all.trend$coefficients[2],4)` degrees Fahrenheit per year. The differencing in the maximum temperature model was also selected to remove an upward trend. 
+
+```{r forecasts}
+##plots
+pl.for.prec<- ggplot(rain.for, aes(time1, est))+
+  geom_ribbon(aes(ymax=upr, ymin=lwr), 
+              fill = "grey50", alpha=0.5)+
+  geom_line(color = "Slateblue4")+
+  geom_line(data=all, aes(time, prec))+
+  coord_cartesian(xlim = c(2010,2030), ylim = c(0,15))+
+  theme_classic()+
+  labs(title = "Precipitation Forecasts", y = "Precipitation (in)", x="")+
+  theme(axis.text.x = element_blank(),
+        axis.title.x = element_blank())
+
+pl.for.tmin<- ggplot(tmin.for, aes(time1, est))+
+  geom_ribbon(aes(ymax=upr, ymin=lwr), 
+              alpha=0.5, fill = "grey50")+
+  geom_line(color = "Slateblue4")+
+  geom_line(data=all, aes(time, t_min))+
+  coord_cartesian(xlim = c(2010,2030))+
+  theme_classic()+
+  labs(title = "Average Monthly Minimum Temperature Forecast", y= "Degree F", x="")+
+  theme(axis.title.x = element_blank())
+
+pl.for.tmax<- ggplot(tmax.for, aes(time1, est))+
+  geom_ribbon(aes(ymax=upr, ymin=lwr), 
+              alpha=0.5, fill = "grey50")+
+  geom_line(aes(time1, est),color="tomato2")+
+  geom_line(data = all, aes(time, t_max))+
+  coord_cartesian(xlim = c(2010,2030))+
+  theme_classic()+
+  labs(title = "Average Monthly Maximum Temperature Forecast", y= "Degree F", x="")+
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_blank())
+
+grid.arrange(pl.for.prec, pl.for.tmax, pl.for.tmin, bottom = "Fig 3. Forecasts & 95% error bands from Holt Winter Additive Models")
+
+#lm(est~time1, rain.for[rain.for$mo==4,])
+```
+
+# Conclusion
+
+The ten year forecasts appear to predict no change to the annual precipitation in Portland, OR. However, there is a predicted increase in both the minimum and maximum temperatures over the next decade. The annual estimated increase in minimum temperature of `r round(tmin.all.trend$coefficients[2],4)*10` per decade surpasses the average annual rate of increase of 0.32 degrees Fahrenheit per decade [3]. The three models suggest a warming climate, and typical annual rain fall. The increased temperatures may cause increased evapotranspiration. With no new water entering the system, this may result in hydrological drought. The agricultural, industrial, and socioeconomic results of such a drought could have lasting effects. Further research on the effects of increased temperature in the Portland, OR area are needed to make any definitive claims. 
+
+
+
+
+# Citations
+
+[1] weather.gov, NOAA, https://www.weather.gov/media/pqr/climate/pastdata/Portland_daily.csv
+
+[2] Cryer, J. D., & Chan, K.-S. (2008). Time series analysis: With applications in R (2nd ed.). Springer.
+
+[3] NOAA National Centers for Environmental Information, State of the Climate: Global Climate Report for Annual 2020, online January 2021, retrieved on March 15, 2021 from https://www.ncdc.noaa.gov/sotc/global/202013.
+

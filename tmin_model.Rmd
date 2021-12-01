@@ -1,0 +1,259 @@
+---
+title: "Max Temp"
+author: "Mikkel Bjornson"
+date: "10/17/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+## Library
+library(readr)
+library(tidyverse)
+library(gridExtra)
+library(TSA)
+library(forecast)
+
+## Data
+train <- readRDS(here::here("train.rds"))
+test <- readRDS(here::here("test.rds"))
+```
+
+
+```{r}
+tmin.p1<-ggplot(train, aes(time, t_min ))+
+  geom_line(na.rm = T)+
+  theme_classic()+
+  geom_smooth(method = "lm")+
+  geom_hline(yintercept = mean(train$t_min), color="red", alpha=0.8)
+
+tmin.p2<-ggplot(train, aes(mo, t_min, group=yr, color = -yr))+
+  geom_line(na.rm = T, alpha=0.2)+
+  scale_x_continuous(breaks = 1:12, labels = month.abb)+
+  theme_classic()
+
+tmin.p1
+tmin.p2
+```
+
+Examining the plots, there appears to be a strong seasonality and a potential upward trend in the data. Visually there does not appear to be a change in the variaiton. As expected, there appears to be an increase in temps in the summer with a peak around August. 
+
+```{r}
+## create time series
+tmin.train<- ts(train$t_min, start = c(train$yr[1],train$mo[1]), frequency = 12)
+tmin.test<- ts(test$t_min, start = c(test$yr[1],test$mo[1]), frequency = 12)
+
+## estimate trend
+tmin.trend<- lm(t_min~time, data=train)
+tmin.trend.ts<- ts(tmin.trend$fitted.values, start = c(train$yr[1],train$mo[1]), frequency = 12)
+
+## detrend
+tmin.train.det <- tmin.train-tmin.trend.ts
+plot(tmin.train.det)
+
+## estimate seasonality
+mo<- as.factor(train$mo)
+tmin.sea<- lm(tmin.train.det~mo)
+tmin.sea.ts<- ts(tmin.sea$fitted.values, start = c(train$yr[1],train$mo[1]), frequency = 12)
+
+## de-season
+tmin.train.rand<- tmin.train.det-tmin.sea.ts
+plot(tmin.train.rand)
+```
+
+
+```{r}
+### acf and PACF
+acf(tmin.train.rand)
+pacf(tmin.train.rand)
+eacf(tmin.train.rand)
+```
+
+ACF suggests q= 1,2, PACF suggests p = 1. EACF suggests p=0,1 and q = 1,2. Will attempt MA(2), ARMA(1,1), ARMA(1,2). These are the same models attempted on t_max (tmax and tmin are likely highly correlated)
+
+```{r}
+tmin.m1<-arima(tmin.train.rand, order = c(0,0,2), include.mean = F)
+tmin.m2<-arima(tmin.train.rand, order = c(1,0,1), include.mean = F)
+tmin.m3<-arima(tmin.train.rand, order = c(1,0,2), include.mean = F)
+tmin.m1
+tmin.m2
+tmin.m3
+```
+
+The ARMA(1,2) model appears to fit the best. 
+
+```{r}
+tsdiag(tmin.m3)
+pacf(tmin.m3$residuals)
+acf(tmin.m3$residuals)
+
+qqnorm(tmin.m3$residuals)
+qqline(tmin.m3$residuals)
+```
+
+The residuals look good except for some occasional outliers. The ACF, PACF, and Ljung-box stats give no reason for concern. The residuals appear to closely follow a normal distribution except on the lower tail this is likely the outliers. 
+
+
+```{r}
+## make predictions
+tmin.m3.preds <- predict(tmin.m3, n.ahead = 180)
+
+## estimate seasonality
+tmin.sea.pred<- predict(tmin.sea, newdata = data.frame(mo=as.factor(test$mo)))
+
+## estimate trend
+tmin.trend.pred<- predict(tmin.trend, newdata = test)
+
+## total
+tmin.arma.pred<- tmin.m3.preds$pred + tmin.sea.pred + tmin.trend.pred
+
+ggplot(train, aes(time, t_min))+
+  geom_line(na.rm = T)+
+  geom_line(data = data.frame(t = test$time, preds=tmin.arma.pred), aes(x=t, y=preds), col='red')+
+  labs(title="ARMA(1,1)")+
+  scale_x_continuous(limits = c(2000,2020))
+```
+
+```{r}
+tmin.arma.rmse<-(mean((tmin.arma.pred-test$t_min)^2))^0.5
+```
+
+This method produced forecasts that are about 2.5 degrees off on average. We will attempt to use a SARIMA model to improve those predictions. 
+
+
+
+```{r}
+tmin.diff<- diff(tmin.train, lag = 1)
+
+ggplot(data.frame(t = tmin.diff, yr = time(tmin.diff)), aes(yr,t))+
+         geom_line()+
+  geom_smooth(method = "lm")+
+  geom_hline(yintercept = mean(tmin.diff), color="red", alpha=0.5)
+
+tmin.diff.sea <- diff(tmin.diff, lag = 12)
+
+ggplot(data.frame(t = tmin.diff.sea, yr = time(tmin.diff.sea)), aes(yr,t))+
+         geom_line()
+
+```
+
+A single difference appears to remove the trend suggesting d=1. A single difference also appears to remove the seasonality suggesting D=1. 
+
+```{r}
+acf(tmin.diff.sea)
+pacf(tmin.diff.sea, lag.max = 48)
+eacf(tmin.diff.sea)
+```
+Season model appears to be MA(1) and random component also appears to be MA(1) or MA(2). Will attempt:
+Sarima(0,1,1)x(0,1,1)12
+Sarima(0,1,2)x(0,1,1)12
+Sarima(1,1,2)x(0,1,1)12
+
+```{r}
+tmin.fit1<- arima(tmin.train, order=c(0,1,1), seasonal=list(order=c(0,1,1), period=12))
+tmin.fit2<- arima(tmin.train, order=c(0,1,2), seasonal=list(order=c(0,1,1), period=12))
+tmin.fit3<- arima(tmin.train, order=c(1,1,2), seasonal=list(order=c(0,1,1), period=12))
+tmin.fit1
+tmin.fit2
+tmin.fit3
+```
+
+Sarima(1,1,2)x(0,1,1)12 appears to fit the model the best.
+
+```{r}
+tsdiag(tmin.fit3)
+acf(tmin.fit3$residuals)
+pacf(tmin.fit3$residuals)
+
+qqnorm(tmin.fit3$residuals)
+```
+
+```{r}
+tmin.sarima.preds<- predict(tmin.fit3, n.ahead = 180)
+
+tmin.sarima.preds.df<- data.frame(pred = tmin.sarima.preds$pred, 
+           lwr= tmin.sarima.preds$pred - 1.965*tmin.sarima.preds$se,
+           upr= tmin.sarima.preds$pred + 1.965*tmin.sarima.preds$se,
+           time = time(tmin.test))
+
+ggplot(tmin.sarima.preds.df, aes(time, pred))+
+  geom_line(data=test, aes(time, t_min))+
+  geom_ribbon(aes(x=time, ymin=lwr, ymax=upr), fill="darkgrey", alpha=0.5)+
+  geom_line(color="blue")+
+  geom_line(data=train, aes(time, t_min))+
+  scale_x_continuous(limits = c(2000,2020))
+  
+```
+
+```{r}
+tmin.sarima.rmse<- mean((tmin.sarima.preds$pred - test$t_min)^2)^0.5
+
+tmin.arma.rmse
+tmin.sarima.rmse
+```
+
+
+```{r}
+nahead<- 12*15
+tmin.hw<- hw(tmin.train, seasonal= "additive", h=nahead)
+
+tmin.hw.est<- cbind(test$time, tmin.hw$mean, tmin.hw$upper, tmin.hw$lower) %>% as.data.frame()
+names(tmin.hw.est)<-c("time1", "est", "u80", "u95", "l80", "l95")
+
+ggplot(tmin.hw.est, aes(x= time1 , y=est))+
+  geom_line()+
+  geom_line(data=train, aes(x=time, y= t_min))
+
+
+```
+
+```{r}
+tmin.hw.rmse<- (mean((tmin.hw$mean - test$t_min)^2))^0.5
+
+tmin.hw.rmse
+tmin.arma.rmse
+tmin.sarima.rmse
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

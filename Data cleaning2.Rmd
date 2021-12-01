@@ -1,0 +1,92 @@
+---
+title: "Data Cleaning"
+output: html_document
+---
+
+Load packages
+```{r}
+library(forecast) 
+library(tidyverse)
+library(TSA)
+library(readr)
+library(lubridate)
+
+#import data:
+pdx <- read_csv("https://www.wrh.noaa.gov/pqr/climate/Portland_dailyclimatedata.csv", skip = 6) #skip 6 rows before taking the first row as variable name
+
+names(pdx)<- c("yr", "mo", "type", "d1", "d2", "d3", "d4", "d5", "d6", "d7", 
+               "d8", "d9", "d10", "d11", "d12", "d13", "d14", "d15", "d16", 
+               "d17", "d18", "d19", "d20", "d21", "d22", "d23", "d24", "d25", 
+               "d26", "d27", "d28", "d29", "d30", "d31", "AVG")
+```
+
+
+Import data and filter target variables
+
+```{r}
+# Clean and extract necessary components of the dataset
+pdx_mo<- pdx %>% tibble()%>% select(mo, yr, type, AVG) %>%
+  pivot_wider(names_from = type, values_from = AVG)%>% 
+  mutate(TX = ifelse(TX=="M", NA, TX),
+         TX = ifelse(TX== "T", 0, TX), 
+         t_max = as.numeric(TX),
+         TN = ifelse(TN=="M", NA, TN),
+         TN = ifelse(TN== "T", 0, TN), 
+         t_min = as.numeric(TN),
+         PR = ifelse(PR=="M", NA, PR),
+         PR = ifelse(PR== "T", 0, PR), 
+         prec = as.numeric(PR)) %>% 
+  select(mo, yr, t_max, t_min, prec)%>%
+  na.omit()
+
+### missing data was only on the first and last case, I chose to omit this cases.  
+pdx_mo[is.na(pdx_mo$t_max),]
+pdx_mo[is.na(pdx_mo$t_min),]
+pdx_mo[is.na(pdx_mo$prec),]
+
+pdx_mo[pdx_mo$mo != c(11, 12, rep(1:12, 79)),]
+```
+
+
+
+
+```{r}
+# change to time series
+rain.ts <- ts(pdx_mo$prec, start = c(pdx_mo$yr[1],pdx_mo$mo[1]), deltat = 1/12)
+tmax.ts <- ts(pdx_mo$t_max, start = c(pdx_mo$yr[1],pdx_mo$mo[1]), deltat = 1/12)
+tmin.ts <- ts(pdx_mo$t_min, start = c(pdx_mo$yr[1],pdx_mo$mo[1]), deltat = 1/12)
+
+plot(rain.ts, main = "Portland, OR. Monthly Average Rainfall (1940-2019)",
+     xlab = "Year",
+     ylab = "Precipitation (in)")
+
+plot(tmax.ts, main = "Portland, OR. Monthly Average Max Temp (1940-2019)",
+     xlab = "Year",
+     ylab = "Max Temp (degrees C)")
+
+plot(tmin.ts, main = "Portland, OR. Monthly Average Min Temp (1940-2019)",
+     xlab = "Year",
+     ylab = "Min Temp (degrees C)")
+```
+
+
+```{r}
+## extract time
+pdx_mo$time<- time(rain.ts)
+
+#length
+L<-nrow(pdx_mo)
+ 
+## split df
+tr<- 1:(L-180)
+train<- pdx_mo[tr,]
+test<- pdx_mo[-tr,]
+
+## save: may need to change the path to desired location
+saveRDS(train, here::here("train.rds"))
+saveRDS(test, here::here("test.rds"))
+```
+
+
+
+
